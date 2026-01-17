@@ -515,7 +515,7 @@ static bool is_init_rc(struct file *fp)
 void ksu_handle_sys_read(unsigned int fd)
 {
 	struct file *file = fget(fd);
-#if defined(CONFIG_KSU_SYSCALL_HOOK)
+#if defined(CONFIG_KSU_SYSCALL_HOOK) || defined(CONFIG_KSU_MANUAL_HOOK)
 	if (!file) {
 		return;
 	}
@@ -527,6 +527,7 @@ void ksu_handle_sys_read(unsigned int fd)
 	/* Do nothing */
 	return;
 #endif
+
 
 	// we only process the first read
 	static bool rc_hooked = false;
@@ -560,6 +561,54 @@ void ksu_handle_sys_read(unsigned int fd)
 skip:
 	fput(file);
 }
+
+#if defined(CONFIG_KSU_MANUAL_HOOK) && !defined(CONFIG_KSU_SUSFS)
+// For manual hook mode: called from fs/read_write.c vfs_read()
+bool ksu_vfs_read_hook __read_mostly = true;
+
+int ksu_handle_vfs_read(struct file **file_ptr, char __user **buf_ptr,
+			size_t *count_ptr, loff_t **pos)
+{
+	if (!ksu_vfs_read_hook) {
+		return 0;
+	}
+
+	struct file *file = *file_ptr;
+	if (!file || IS_ERR(file)) {
+		return 0;
+	}
+
+	if (!is_init_rc(file)) {
+		return 0;
+	}
+
+	// we only process the first read
+	static bool rc_hooked = false;
+	if (rc_hooked) {
+		ksu_vfs_read_hook = false;
+		return 0;
+	}
+	rc_hooked = true;
+
+	pr_info("vfs_read init.rc, comm: %s, rc_count: %zu\n", current->comm,
+		ksu_rc_len);
+
+	// Now we need to proxy the read and modify the result!
+	memcpy(&fops_proxy, file->f_op, sizeof(struct file_operations));
+	orig_read = file->f_op->read;
+	if (orig_read) {
+		fops_proxy.read = read_proxy;
+	}
+	orig_read_iter = file->f_op->read_iter;
+	if (orig_read_iter) {
+		fops_proxy.read_iter = read_iter_proxy;
+	}
+	file->f_op = &fops_proxy;
+
+	return 0;
+}
+#endif
+
 
 static unsigned int volumedown_pressed_count = 0;
 
