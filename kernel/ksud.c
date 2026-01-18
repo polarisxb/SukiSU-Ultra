@@ -368,68 +368,8 @@ static ssize_t read_iter_proxy(struct kiocb *iocb, struct iov_iter *to)
 int ksu_handle_vfs_read(struct file **file_ptr, char __user **buf_ptr,
                                size_t *count_ptr, loff_t **pos)
 {
-#ifndef KSU_KPROBES_HOOK
-    if (!ksu_vfs_read_hook) {
-        return 0;
-    }
-#endif
-    static bool rc_inserted = false;
-    struct file *file;
-    char __user *buf;
-    size_t count;
-
-    // Quick exit for non-init processes
-    if (strcmp(current->comm, "init")) {
-        return 0;
-    }
-
-    // Already done?
-    if (rc_inserted) {
-        return 0;
-    }
-
-    file = *file_ptr;
-    if (!file || IS_ERR(file)) {
-        return 0;
-    }
-
-    // Simple filename check only - avoid d_path() which may cause issues
-    if (!file->f_path.dentry || !file->f_path.dentry->d_name.name) {
-        return 0;
-    }
-    
-    const char *filename = file->f_path.dentry->d_name.name;
-    
-    // Check for atrace.rc (or init.rc as fallback)
-    if (strcmp(filename, "atrace.rc") != 0) {
-        return 0;
-    }
-
-    rc_inserted = true;
-    
-    // Stop the hook after first match
-    stop_vfs_read_hook();
-
-    buf = *buf_ptr;
-    count = *count_ptr;
-
-    size_t rc_count = strlen(KERNEL_SU_RC);
-
-    if (count < rc_count) {
-        return 0;
-    }
-
-    // Inject KERNEL_SU_RC at the beginning of the buffer
-    if (copy_to_user(buf, KERNEL_SU_RC, rc_count)) {
-        return 0;
-    }
-
-    pr_info("KernelSU: injected %zu bytes into %s\n", rc_count, filename);
-
-    // Adjust buffer pointer for remaining read
-    *buf_ptr = buf + rc_count;
-    *count_ptr = count - rc_count;
-
+    // DEBUG: Absolute minimal version - do nothing, just return
+    // If this still bootloops, the problem is in the call site, not here
     return 0;
 }
 
