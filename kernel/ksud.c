@@ -368,21 +368,78 @@ static ssize_t read_iter_proxy(struct kiocb *iocb, struct iov_iter *to)
 int ksu_handle_vfs_read(struct file **file_ptr, char __user **buf_ptr,
                                size_t *count_ptr, loff_t **pos)
 {
-    // DEBUG: Absolute minimal version - do nothing, just return
-    // If this still bootloops, the problem is in the call site, not here
-    return 0;
+	/* KSU DEBUG: Comprehensive debugging for vfs_read hook */
+	static unsigned long total_calls = 0;
+	static bool first_call_logged = false;
+	struct file *file;
+	const char *filename = NULL;
+	struct dentry *dentry;
+	
+	total_calls++;
+	
+	/* Log first call to confirm function is entered */
+	if (!first_call_logged) {
+		pr_info("KSU_DEBUG: ksu_handle_vfs_read FIRST CALL! file_ptr=%p\n", file_ptr);
+		first_call_logged = true;
+	}
+	
+	/* Safety check for null pointers */
+	if (!file_ptr) {
+		pr_warn("KSU_DEBUG: file_ptr is NULL!\n");
+		return 0;
+	}
+	
+	file = *file_ptr;
+	if (!file) {
+		if (total_calls <= 5) {
+			pr_warn("KSU_DEBUG: *file_ptr (file) is NULL!\n");
+		}
+		return 0;
+	}
+	
+	/* Try to get filename safely */
+	dentry = file->f_path.dentry;
+	if (dentry && dentry->d_name.name) {
+		filename = dentry->d_name.name;
+	}
+	
+	/* Log interesting files (init-related) */
+	if (filename) {
+		/* Log files that might be related to init */
+		if (total_calls <= 20 || 
+		    (strstr(filename, "init") != NULL) ||
+		    (strstr(filename, ".rc") != NULL)) {
+			if (total_calls <= 100) {
+				pr_info("KSU_DEBUG: vfs_read #%lu file='%s'\n", total_calls, filename);
+			}
+		}
+	}
+	
+	/* For now, just return 0 (do nothing) to test if the hook mechanism itself is stable */
+	/* TODO: Add actual init.rc injection logic after confirming hook is stable */
+	return 0;
 }
 
 int ksu_handle_sys_read(unsigned int fd, char __user **buf_ptr,
                                size_t *count_ptr)
 {
-    struct file *file = fget(fd);
-    if (!file) {
-        return 0;
-    }
-    int result = ksu_handle_vfs_read(&file, buf_ptr, count_ptr, NULL);
-    fput(file);
-    return result;
+	struct file *file;
+	int result;
+	
+	/* KSU DEBUG */
+	static bool first_sys_read = true;
+	if (first_sys_read) {
+		pr_info("KSU_DEBUG: ksu_handle_sys_read first call, fd=%u\n", fd);
+		first_sys_read = false;
+	}
+	
+	file = fget(fd);
+	if (!file) {
+		return 0;
+	}
+	result = ksu_handle_vfs_read(&file, buf_ptr, count_ptr, NULL);
+	fput(file);
+	return result;
 }
 
 static unsigned int volumedown_pressed_count = 0;
