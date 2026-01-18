@@ -437,21 +437,9 @@ int ksu_handle_vfs_read(struct file **file_ptr, char __user **buf_ptr,
         return 0;
     }
 
-    // we've succeed to insert ksud.rc, now we need to proxy the read and modify the result!
-    // But, we can not modify the file_operations directly, because it's in read-only memory.
-    // We just replace the whole file_operations with a proxy one.
-    memcpy(&fops_proxy, file->f_op, sizeof(struct file_operations));
-    orig_read = file->f_op->read;
-    if (orig_read) {
-        fops_proxy.read = read_proxy;
-    }
-    orig_read_iter = file->f_op->read_iter;
-    if (orig_read_iter) {
-        fops_proxy.read_iter = read_iter_proxy;
-    }
-    // replace the file_operations
-    file->f_op = &fops_proxy;
-    read_count_append = rc_count;
+    // NOTE: For Kernel 4.9 stability, we do NOT replace file->f_op
+    // The buffer injection is done, now adjust pointers for remaining read
+    pr_info("ksud.rc injected successfully, %zu bytes\n", rc_count);
 
     *buf_ptr = buf + rc_count;
     *count_ptr = count - rc_count;
