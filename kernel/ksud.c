@@ -65,7 +65,7 @@ bool ksu_execveat_hook __read_mostly = true;
 bool ksu_input_hook __read_mostly = true;
 #endif
 
-u32 ksu_file_sid;
+// ksu_file_sid is defined in selinux/selinux.c, declared extern in ksud.h
 
 // Detect whether it is on or not
 static bool is_boot_phase = true;
