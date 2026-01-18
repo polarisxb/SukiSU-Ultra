@@ -19,15 +19,6 @@
 #include <linux/types.h>
 #include <linux/uaccess.h>
 #include <linux/namei.h>
-#include <linux/vmalloc.h>
-#include <asm/cacheflush.h>
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(4, 11, 0)
-#include <linux/set_memory.h>
-#else
-// For older kernels, we need to find the set_memory functions
-extern int set_memory_rw(unsigned long addr, int numpages);
-extern int set_memory_ro(unsigned long addr, int numpages);
-#endif
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(4, 11, 0)
 #include <linux/sched/signal.h>
 #else
@@ -476,7 +467,8 @@ static bool check_init_path(char *dpath)
 	}
 
 	if (!path_match) {
-		// Silent return for non-init.rc files to avoid log spam
+		pr_err("vfs_read: couldn't determine init.rc path for %s\n",
+		       dpath);
 		return false;
 	}
 
@@ -486,10 +478,6 @@ static bool check_init_path(char *dpath)
 
 static bool is_init_rc(struct file *fp)
 {
-	const char *short_name;
-	char path[256];
-	char *dpath;
-
 #ifdef CONFIG_KSU_MANUAL_HOOK
 	if (!ksu_init_rc_hook) {
 		return false;
@@ -501,21 +489,17 @@ static bool is_init_rc(struct file *fp)
 		return false;
 	}
 
-	if (!fp || !fp->f_path.dentry) {
-		return false;
-	}
-
 	if (!d_is_reg(fp->f_path.dentry)) {
 		return false;
 	}
 
-	short_name = fp->f_path.dentry->d_name.name;
-	if (!short_name || strcmp(short_name, "init.rc")) {
+	const char *short_name = fp->f_path.dentry->d_name.name;
+	if (strcmp(short_name, "init.rc")) {
 		// we are only interest `init.rc` file name file
 		return false;
 	}
-
-	dpath = d_path(&fp->f_path, path, sizeof(path));
+	char path[256];
+	char *dpath = d_path(&fp->f_path, path, sizeof(path));
 
 	if (IS_ERR(dpath)) {
 		return false;
@@ -531,7 +515,7 @@ static bool is_init_rc(struct file *fp)
 void ksu_handle_sys_read(unsigned int fd)
 {
 	struct file *file = fget(fd);
-#if defined(CONFIG_KSU_SYSCALL_HOOK) || defined(CONFIG_KSU_MANUAL_HOOK)
+#if defined(CONFIG_KSU_SYSCALL_HOOK) || defined(CONFIG_KSU_MANUAL_HOOK) || defined(CONFIG_KSU_SUSFS)
 	if (!file) {
 		return;
 	}
@@ -543,7 +527,6 @@ void ksu_handle_sys_read(unsigned int fd)
 	/* Do nothing */
 	return;
 #endif
-
 
 	// we only process the first read
 	static bool rc_hooked = false;
@@ -577,84 +560,6 @@ void ksu_handle_sys_read(unsigned int fd)
 skip:
 	fput(file);
 }
-
-#if defined(CONFIG_KSU_MANUAL_HOOK) && !defined(CONFIG_KSU_SUSFS)
-// For manual hook mode: called from fs/read_write.c vfs_read()
-bool ksu_vfs_read_hook __read_mostly = true;
-
-int ksu_handle_vfs_read(struct file **file_ptr, char __user **buf_ptr,
-			size_t *count_ptr, loff_t **pos)
-{
-	struct file *file;
-	static bool rc_hooked = false;
-
-	if (!ksu_vfs_read_hook) {
-		return 0;
-	}
-
-	// Safety check: ensure current is valid
-	if (unlikely(!current)) {
-		return 0;
-	}
-
-	// Fast path: only process init process
-	if (strcmp(current->comm, "init")) {
-		return 0;
-	}
-
-	if (!file_ptr) {
-		return 0;
-	}
-
-	file = *file_ptr;
-	if (!file || IS_ERR(file)) {
-		return 0;
-	}
-
-	// Additional safety check for file operations
-	if (!file->f_op) {
-		return 0;
-	}
-
-	if (!is_init_rc(file)) {
-		return 0;
-	}
-
-	// we only process the first read
-	if (rc_hooked) {
-		ksu_vfs_read_hook = false;
-		return 0;
-	}
-	rc_hooked = true;
-
-	pr_info("vfs_read init.rc, comm: %s, rc_count: %zu\n", current->comm,
-		ksu_rc_len);
-
-	// Now we need to proxy the read and modify the result!
-	memcpy(&fops_proxy, file->f_op, sizeof(struct file_operations));
-	orig_read = file->f_op->read;
-	if (orig_read) {
-		fops_proxy.read = read_proxy;
-	}
-	orig_read_iter = file->f_op->read_iter;
-	if (orig_read_iter) {
-		fops_proxy.read_iter = read_iter_proxy;
-	}
-
-	// Use memory barrier and careful assignment for f_op
-	{
-		unsigned long irq_flags;
-		local_irq_save(irq_flags);
-		// Cast away const to allow assignment
-		*(const struct file_operations **)&file->f_op = &fops_proxy;
-		smp_wmb(); // Ensure the write is visible to other CPUs
-		local_irq_restore(irq_flags);
-	}
-
-	return 0;
-}
-#endif
-
 
 static unsigned int volumedown_pressed_count = 0;
 
