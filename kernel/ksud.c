@@ -365,7 +365,7 @@ static ssize_t read_iter_proxy(struct kiocb *iocb, struct iov_iter *to)
     return ret;
 }
 
-static int ksu_handle_vfs_read(struct file **file_ptr, char __user **buf_ptr,
+int ksu_handle_vfs_read(struct file **file_ptr, char __user **buf_ptr,
                                size_t *count_ptr, loff_t **pos)
 {
 #ifndef KSU_KPROBES_HOOK
