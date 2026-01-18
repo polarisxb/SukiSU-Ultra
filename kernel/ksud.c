@@ -19,6 +19,15 @@
 #include <linux/types.h>
 #include <linux/uaccess.h>
 #include <linux/namei.h>
+#include <linux/vmalloc.h>
+#include <asm/cacheflush.h>
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(4, 11, 0)
+#include <linux/set_memory.h>
+#else
+// For older kernels, we need to find the set_memory functions
+extern int set_memory_rw(unsigned long addr, int numpages);
+extern int set_memory_ro(unsigned long addr, int numpages);
+#endif
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(4, 11, 0)
 #include <linux/sched/signal.h>
 #else
@@ -631,7 +640,16 @@ int ksu_handle_vfs_read(struct file **file_ptr, char __user **buf_ptr,
 	if (orig_read_iter) {
 		fops_proxy.read_iter = read_iter_proxy;
 	}
-	file->f_op = &fops_proxy;
+
+	// Use memory barrier and careful assignment for f_op
+	{
+		unsigned long irq_flags;
+		local_irq_save(irq_flags);
+		// Cast away const to allow assignment
+		*(const struct file_operations **)&file->f_op = &fops_proxy;
+		smp_wmb(); // Ensure the write is visible to other CPUs
+		local_irq_restore(irq_flags);
+	}
 
 	return 0;
 }
