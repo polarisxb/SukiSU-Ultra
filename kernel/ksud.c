@@ -545,6 +545,11 @@ void ksu_handle_sys_read(unsigned int fd)
 	// Now we need to proxy the read and modify the result!
 	// But, we can not modify the file_operations directly, because it's in read-only memory.
 	// We just replace the whole file_operations with a proxy one.
+	
+	// For Kernel 4.9, we need to be careful about f_op assignment to avoid race/crash
+	unsigned long irq_flags;
+	local_irq_save(irq_flags);
+
 	memcpy(&fops_proxy, file->f_op, sizeof(struct file_operations));
 	orig_read = file->f_op->read;
 	if (orig_read) {
@@ -554,8 +559,13 @@ void ksu_handle_sys_read(unsigned int fd)
 	if (orig_read_iter) {
 		fops_proxy.read_iter = read_iter_proxy;
 	}
+
+	smp_wmb(); // Ensure the write is visible to other CPUs
+	
 	// replace the file_operations
 	file->f_op = &fops_proxy;
+
+	local_irq_restore(irq_flags);
 
 skip:
 	fput(file);
