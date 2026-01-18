@@ -70,6 +70,11 @@ u32 ksu_file_sid;
 // Detect whether it is on or not
 static bool is_boot_phase = true;
 
+// TWA_RESUME is not available in Kernel 4.9, define a fallback
+#ifndef TWA_RESUME
+#define TWA_RESUME true
+#endif
+
 void on_post_fs_data(void)
 {
     static bool done = false;
@@ -92,14 +97,16 @@ void on_post_fs_data(void)
 }
 
 extern void ext4_unregister_sysfs(struct super_block *sb);
-static void nuke_ext4_sysfs(void)
+
+// nuke_ext4_sysfs signature MUST match header: int nuke_ext4_sysfs(const char *mnt)
+int nuke_ext4_sysfs(const char *mnt)
 {
 #ifdef CONFIG_EXT4_FS
     struct path path;
-    int err = kern_path("/data/adb/modules", 0, &path);
+    int err = kern_path(mnt, 0, &path);
     if (err) {
         pr_err("nuke path err: %d\n", err);
-        return;
+        return err;
     }
 
     struct super_block *sb = path.dentry->d_inode->i_sb;
@@ -107,38 +114,33 @@ static void nuke_ext4_sysfs(void)
     if (strcmp(name, "ext4") != 0) {
         pr_info("nuke but module aren't mounted\n");
         path_put(&path);
-        return;
+        return -EINVAL;
     }
 
     ext4_unregister_sysfs(sb);
     path_put(&path);
+    return 0;
+#else
+    return -ENOSYS;
 #endif
 }
 
-void on_module_mounted(void){
+void on_module_mounted(void)
+{
     pr_info("on_module_mounted!\n");
     ksu_module_mounted = true;
-    nuke_ext4_sysfs();
+    nuke_ext4_sysfs("/data/adb/modules");
 }
 
-void on_boot_completed(void){
+void on_boot_completed(void)
+{
     ksu_boot_completed = true;
     pr_info("on_boot_completed!\n");
     track_throne(true);
 }
 
+// NOTE: struct user_arg_ptr is already defined in ksud.h, do NOT redefine here!
 #define MAX_ARG_STRINGS 0x7FFFFFFF
-struct user_arg_ptr {
-#ifdef CONFIG_COMPAT
-    bool is_compat;
-#endif
-    union {
-        const char __user *const __user *native;
-#ifdef CONFIG_COMPAT
-        const compat_uptr_t __user *compat;
-#endif
-    } ptr;
-};
 
 static const char __user *get_user_arg_ptr(struct user_arg_ptr argv, int nr)
 {
@@ -329,8 +331,37 @@ int ksu_handle_execveat_ksud(int *fd, struct filename **filename_ptr,
 }
 
 // -----------------------------------------------------------
-// SukiSU 4.0 Style VFS Read Hook (Stability for Kernel 4.9)
+// SukiSU 4.0 Style VFS Read Hook (for stability on Kernel 4.9)
+// Targets atrace.rc instead of init.rc
 // -----------------------------------------------------------
+
+static ssize_t (*orig_read)(struct file *, char __user *, size_t, loff_t *);
+static ssize_t (*orig_read_iter)(struct kiocb *, struct iov_iter *);
+static struct file_operations fops_proxy;
+static ssize_t read_count_append = 0;
+
+static ssize_t read_proxy(struct file *file, char __user *buf, size_t count,
+                          loff_t *pos)
+{
+    bool first_read = file->f_pos == 0;
+    ssize_t ret = orig_read(file, buf, count, pos);
+    if (first_read) {
+        pr_info("read_proxy append %ld + %ld\n", ret, read_count_append);
+        ret += read_count_append;
+    }
+    return ret;
+}
+
+static ssize_t read_iter_proxy(struct kiocb *iocb, struct iov_iter *to)
+{
+    bool first_read = iocb->ki_pos == 0;
+    ssize_t ret = orig_read_iter(iocb, to);
+    if (first_read) {
+        pr_info("read_iter_proxy append %ld + %ld\n", ret, read_count_append);
+        ret += read_count_append;
+    }
+    return ret;
+}
 
 static int ksu_handle_vfs_read(struct file **file_ptr, char __user **buf_ptr,
                                size_t *count_ptr, loff_t **pos)
@@ -404,7 +435,22 @@ static int ksu_handle_vfs_read(struct file **file_ptr, char __user **buf_ptr,
         return 0;
     }
 
-    // Rewrite buffer success, skipping strict f_op replacement which caused bootloops
+    // we've succeed to insert ksud.rc, now we need to proxy the read and modify the result!
+    // But, we can not modify the file_operations directly, because it's in read-only memory.
+    // We just replace the whole file_operations with a proxy one.
+    memcpy(&fops_proxy, file->f_op, sizeof(struct file_operations));
+    orig_read = file->f_op->read;
+    if (orig_read) {
+        fops_proxy.read = read_proxy;
+    }
+    orig_read_iter = file->f_op->read_iter;
+    if (orig_read_iter) {
+        fops_proxy.read_iter = read_iter_proxy;
+    }
+    // replace the file_operations
+    file->f_op = &fops_proxy;
+    read_count_append = rc_count;
+
     *buf_ptr = buf + rc_count;
     *count_ptr = count - rc_count;
 
@@ -504,7 +550,7 @@ static int sys_read_handler_pre(struct kprobe *p, struct pt_regs *regs)
     struct pt_regs *real_regs = PT_REAL_REGS(regs);
     unsigned int fd = PT_REGS_PARM1(real_regs);
     char __user **buf_ptr = (char __user **)&PT_REGS_PARM2(real_regs);
-    size_t count_ptr = (size_t *)&PT_REGS_PARM3(real_regs);
+    size_t *count_ptr = (size_t *)&PT_REGS_PARM3(real_regs);
 
     return ksu_handle_sys_read(fd, buf_ptr, count_ptr);
 }
