@@ -477,6 +477,10 @@ static bool check_init_path(char *dpath)
 
 static bool is_init_rc(struct file *fp)
 {
+	const char *short_name;
+	char path[256];
+	char *dpath;
+
 #ifdef CONFIG_KSU_MANUAL_HOOK
 	if (!ksu_init_rc_hook) {
 		return false;
@@ -488,17 +492,21 @@ static bool is_init_rc(struct file *fp)
 		return false;
 	}
 
+	if (!fp || !fp->f_path.dentry) {
+		return false;
+	}
+
 	if (!d_is_reg(fp->f_path.dentry)) {
 		return false;
 	}
 
-	const char *short_name = fp->f_path.dentry->d_name.name;
-	if (strcmp(short_name, "init.rc")) {
+	short_name = fp->f_path.dentry->d_name.name;
+	if (!short_name || strcmp(short_name, "init.rc")) {
 		// we are only interest `init.rc` file name file
 		return false;
 	}
-	char path[256];
-	char *dpath = d_path(&fp->f_path, path, sizeof(path));
+
+	dpath = d_path(&fp->f_path, path, sizeof(path));
 
 	if (IS_ERR(dpath)) {
 		return false;
@@ -568,7 +576,15 @@ bool ksu_vfs_read_hook __read_mostly = true;
 int ksu_handle_vfs_read(struct file **file_ptr, char __user **buf_ptr,
 			size_t *count_ptr, loff_t **pos)
 {
+	struct file *file;
+	static bool rc_hooked = false;
+
 	if (!ksu_vfs_read_hook) {
+		return 0;
+	}
+
+	// Safety check: ensure current is valid
+	if (unlikely(!current)) {
 		return 0;
 	}
 
@@ -577,8 +593,17 @@ int ksu_handle_vfs_read(struct file **file_ptr, char __user **buf_ptr,
 		return 0;
 	}
 
-	struct file *file = *file_ptr;
+	if (!file_ptr) {
+		return 0;
+	}
+
+	file = *file_ptr;
 	if (!file || IS_ERR(file)) {
+		return 0;
+	}
+
+	// Additional safety check for file operations
+	if (!file->f_op) {
 		return 0;
 	}
 
@@ -587,7 +612,6 @@ int ksu_handle_vfs_read(struct file **file_ptr, char __user **buf_ptr,
 	}
 
 	// we only process the first read
-	static bool rc_hooked = false;
 	if (rc_hooked) {
 		ksu_vfs_read_hook = false;
 		return 0;
