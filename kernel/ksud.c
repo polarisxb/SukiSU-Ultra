@@ -17,6 +17,8 @@
 #include <linux/namei.h>
 #include <linux/workqueue.h>
 
+#include "kernel_compat.h"
+
 #include "manager.h"
 #include "allowlist.h"
 #include "arch.h"
@@ -92,7 +94,7 @@ void on_post_fs_data(void)
     // End of boot state
     is_boot_phase = false;
 
-    ksu_file_sid = ksu_get_ksu_file_sid();
+    cache_sid();
 	pr_info("ksu_file sid: %d\n", ksu_file_sid);
 }
 
@@ -244,7 +246,7 @@ int ksu_handle_execveat_ksud(int *fd, struct filename **filename_ptr,
             const char __user *p = get_user_arg_ptr(*argv, 1);
             if (p && !IS_ERR(p)) {
                 char first_arg[16];
-                strncpy_from_user_nofault(first_arg, p, sizeof(first_arg));
+                ksu_strncpy_from_user_nofault(first_arg, p, sizeof(first_arg));
                 pr_info("/system/bin/init first arg: %s\n", first_arg);
                 if (!strcmp(first_arg, "second_stage")) {
                     pr_info("/system/bin/init second_stage executed\n");
@@ -266,7 +268,7 @@ int ksu_handle_execveat_ksud(int *fd, struct filename **filename_ptr,
             const char __user *p = get_user_arg_ptr(*argv, 1);
             if (p && !IS_ERR(p)) {
                 char first_arg[16];
-                strncpy_from_user_nofault(first_arg, p, sizeof(first_arg));
+                ksu_strncpy_from_user_nofault(first_arg, p, sizeof(first_arg));
                 pr_info("/init first arg: %s\n", first_arg);
                 if (!strcmp(first_arg, "--second-stage")) {
                     pr_info("/init second_stage executed\n");
@@ -288,7 +290,7 @@ int ksu_handle_execveat_ksud(int *fd, struct filename **filename_ptr,
                     }
                     char env[256];
                     // Reading environment variable strings from user space
-                    if (strncpy_from_user_nofault(env, p, sizeof(env)) < 0)
+                    if (ksu_strncpy_from_user_nofault(env, p, sizeof(env)) < 0)
                         continue;
                     // Parsing environment variable names and values
                     char *env_name = env;
@@ -538,7 +540,7 @@ static int sys_execve_handler_pre(struct kprobe *p, struct pt_regs *regs)
         return 0;
 
     memset(path, 0, sizeof(path));
-    strncpy_from_user_nofault(path, *filename_user, 32);
+    ksu_strncpy_from_user_nofault(path, *filename_user, 32);
     filename_in.name = path;
 
     filename_p = &filename_in;
