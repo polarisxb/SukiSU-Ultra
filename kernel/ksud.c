@@ -484,92 +484,104 @@ static bool is_init_rc(struct file *fp)
 	}
 #endif
 
-	if (strcmp(current->comm, "init")) {
-		// we are only interest in `init` process
-		return false;
-	}
+// Removed 4.1 specific stop_init_rc_hook / is_init_rc helpers in favor of 4.0 vfs_read hook
+// -----------------------------------------------------------
+// SukiSU 4.0 Style VFS Read Hook (Stability for Kernel 4.9)
+// -----------------------------------------------------------
 
-	if (!d_is_reg(fp->f_path.dentry)) {
-		return false;
-	}
+static void stop_vfs_read_hook();
 
-	const char *short_name = fp->f_path.dentry->d_name.name;
-	if (strcmp(short_name, "init.rc")) {
-		// we are only interest `init.rc` file name file
-		return false;
-	}
-	char path[256];
-	char *dpath = d_path(&fp->f_path, path, sizeof(path));
-
-	if (IS_ERR(dpath)) {
-		return false;
-	}
-
-	if (!check_init_path(dpath)) {
-		return false;
-	}
-
-	return true;
-}
-
-void ksu_handle_sys_read(unsigned int fd)
+static int ksu_handle_vfs_read(struct file **file_ptr, char __user **buf_ptr,
+                               size_t *count_ptr, loff_t **pos)
 {
-	struct file *file = fget(fd);
-#if defined(CONFIG_KSU_SYSCALL_HOOK) || defined(CONFIG_KSU_MANUAL_HOOK) || defined(CONFIG_KSU_SUSFS)
-	if (!file) {
-		return;
-	}
-
-	if (!is_init_rc(file)) {
-		goto skip;
-	}
-#else
-	/* Do nothing */
-	return;
+#ifndef KSU_KPROBES_HOOK
+    if (!ksu_vfs_read_hook) {
+        return 0;
+    }
 #endif
+    struct file *file;
+    char __user *buf;
+    size_t count;
 
-	// we only process the first read
-	static bool rc_hooked = false;
-	if (rc_hooked) {
-		// we don't need these kprobe, unregister it!
-		stop_init_rc_hook();
-		goto skip;
-	}
-	rc_hooked = true;
+    if (strcmp(current->comm, "init")) {
+        // we are only interest in `init` process
+        return 0;
+    }
 
-	// now we can sure that the init process is reading
-	// `/system/etc/init/hw/init.rc` or `/init.rc`
-	pr_info("read init.rc, comm: %s, rc_count: %zu\n", current->comm,
-		ksu_rc_len);
+    file = *file_ptr;
+    if (IS_ERR(file)) {
+        return 0;
+    }
 
-	// Now we need to proxy the read and modify the result!
-	// But, we can not modify the file_operations directly, because it's in read-only memory.
-	// We just replace the whole file_operations with a proxy one.
-	
-	// For Kernel 4.9, we need to be careful about f_op assignment to avoid race/crash
-	unsigned long irq_flags;
-	local_irq_save(irq_flags);
+    if (!d_is_reg(file->f_path.dentry)) {
+        return 0;
+    }
 
-	memcpy(&fops_proxy, file->f_op, sizeof(struct file_operations));
-	orig_read = file->f_op->read;
-	if (orig_read) {
-		fops_proxy.read = read_proxy;
-	}
-	orig_read_iter = file->f_op->read_iter;
-	if (orig_read_iter) {
-		fops_proxy.read_iter = read_iter_proxy;
-	}
+    const char *short_name = file->f_path.dentry->d_name.name;
+    if (strcmp(short_name, "atrace.rc")) {
+        // we are only interest `atrace.rc` file name file
+        return 0;
+    }
+    char path[256];
+    char *dpath = d_path(&file->f_path, path, sizeof(path));
 
-	smp_wmb(); // Ensure the write is visible to other CPUs
-	
-	// replace the file_operations
-	file->f_op = &fops_proxy;
+    if (IS_ERR(dpath)) {
+        return 0;
+    }
 
-	local_irq_restore(irq_flags);
+    if (strcmp(dpath, "/system/etc/init/atrace.rc")) {
+        return 0;
+    }
 
-skip:
-	fput(file);
+    // we only process the first read
+    static bool rc_inserted = false;
+    if (rc_inserted) {
+        // we don't need this kprobe, unregister it!
+        stop_vfs_read_hook();
+        return 0;
+    }
+    rc_inserted = true;
+
+    // now we can sure that the init process is reading
+    // `/system/etc/init/atrace.rc`
+    buf = *buf_ptr;
+    count = *count_ptr;
+
+    size_t rc_count = strlen(KERNEL_SU_RC);
+
+    pr_info("vfs_read: %s, comm: %s, count: %zu, rc_count: %zu\n", dpath,
+            current->comm, count, rc_count);
+
+    if (count < rc_count) {
+        pr_err("count: %zu < rc_count: %zu\n", count, rc_count);
+        return 0;
+    }
+
+    size_t ret = copy_to_user(buf, KERNEL_SU_RC, rc_count);
+    if (ret) {
+        pr_err("copy ksud.rc failed: %zu\n", ret);
+        return 0;
+    }
+
+    // Rewrite buffer success, skipping strict f_op replacement which caused bootloops
+    *buf_ptr = buf + rc_count;
+    *count_ptr = count - rc_count;
+
+    return 0;
 }
+
+int ksu_handle_sys_read(unsigned int fd, char __user **buf_ptr,
+                               size_t *count_ptr)
+{
+    struct file *file = fget(fd);
+    if (!file) {
+        return 0;
+    }
+    int result = ksu_handle_vfs_read(&file, buf_ptr, count_ptr, NULL);
+    fput(file);
+    return result;
+}
+
 
 static unsigned int volumedown_pressed_count = 0;
 
