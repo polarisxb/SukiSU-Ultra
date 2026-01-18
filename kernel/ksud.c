@@ -373,74 +373,60 @@ int ksu_handle_vfs_read(struct file **file_ptr, char __user **buf_ptr,
         return 0;
     }
 #endif
+    static bool rc_inserted = false;
     struct file *file;
     char __user *buf;
     size_t count;
 
+    // Quick exit for non-init processes
     if (strcmp(current->comm, "init")) {
-        // we are only interest in `init` process
+        return 0;
+    }
+
+    // Already done?
+    if (rc_inserted) {
         return 0;
     }
 
     file = *file_ptr;
-    if (IS_ERR(file)) {
+    if (!file || IS_ERR(file)) {
         return 0;
     }
 
-    if (!d_is_reg(file->f_path.dentry)) {
+    // Simple filename check only - avoid d_path() which may cause issues
+    if (!file->f_path.dentry || !file->f_path.dentry->d_name.name) {
+        return 0;
+    }
+    
+    const char *filename = file->f_path.dentry->d_name.name;
+    
+    // Check for atrace.rc (or init.rc as fallback)
+    if (strcmp(filename, "atrace.rc") != 0) {
         return 0;
     }
 
-    const char *short_name = file->f_path.dentry->d_name.name;
-    if (strcmp(short_name, "atrace.rc")) {
-        // we are only interest `atrace.rc` file name file
-        return 0;
-    }
-    char path[256];
-    char *dpath = d_path(&file->f_path, path, sizeof(path));
-
-    if (IS_ERR(dpath)) {
-        return 0;
-    }
-
-    if (strcmp(dpath, "/system/etc/init/atrace.rc")) {
-        return 0;
-    }
-
-    // we only process the first read
-    static bool rc_inserted = false;
-    if (rc_inserted) {
-        // we don't need this kprobe, unregister it!
-        stop_vfs_read_hook();
-        return 0;
-    }
     rc_inserted = true;
+    
+    // Stop the hook after first match
+    stop_vfs_read_hook();
 
-    // now we can sure that the init process is reading
-    // `/system/etc/init/atrace.rc`
     buf = *buf_ptr;
     count = *count_ptr;
 
     size_t rc_count = strlen(KERNEL_SU_RC);
 
-    pr_info("vfs_read: %s, comm: %s, count: %zu, rc_count: %zu\n", dpath,
-            current->comm, count, rc_count);
-
     if (count < rc_count) {
-        pr_err("count: %zu < rc_count: %zu\n", count, rc_count);
         return 0;
     }
 
-    size_t ret = copy_to_user(buf, KERNEL_SU_RC, rc_count);
-    if (ret) {
-        pr_err("copy ksud.rc failed: %zu\n", ret);
+    // Inject KERNEL_SU_RC at the beginning of the buffer
+    if (copy_to_user(buf, KERNEL_SU_RC, rc_count)) {
         return 0;
     }
 
-    // NOTE: For Kernel 4.9 stability, we do NOT replace file->f_op
-    // The buffer injection is done, now adjust pointers for remaining read
-    pr_info("ksud.rc injected successfully, %zu bytes\n", rc_count);
+    pr_info("KernelSU: injected %zu bytes into %s\n", rc_count, filename);
 
+    // Adjust buffer pointer for remaining read
     *buf_ptr = buf + rc_count;
     *count_ptr = count - rc_count;
 
