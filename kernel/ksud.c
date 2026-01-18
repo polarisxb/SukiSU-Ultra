@@ -467,8 +467,7 @@ static bool check_init_path(char *dpath)
 	}
 
 	if (!path_match) {
-		pr_err("vfs_read: couldn't determine init.rc path for %s\n",
-		       dpath);
+		// Silent return for non-init.rc files to avoid log spam
 		return false;
 	}
 
@@ -570,6 +569,11 @@ int ksu_handle_vfs_read(struct file **file_ptr, char __user **buf_ptr,
 			size_t *count_ptr, loff_t **pos)
 {
 	if (!ksu_vfs_read_hook) {
+		return 0;
+	}
+
+	// Fast path: only process init process
+	if (strcmp(current->comm, "init")) {
 		return 0;
 	}
 
