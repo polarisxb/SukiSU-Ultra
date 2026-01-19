@@ -70,6 +70,32 @@ void apply_kernelsu_rules(void)
 	// our ksud triggered by init
 	ksu_allow(db, "init", KERNEL_SU_DOMAIN, ALL, ALL);
 
+	// Allow init to execute ksud from /data/adb (adb_data_file)
+	ksu_allow(db, "init", "adb_data_file", "file", "execute");
+	ksu_allow(db, "init", "adb_data_file", "file", "execute_no_trans");
+	ksu_allow(db, "init", "adb_data_file", "file", "open");
+	ksu_allow(db, "init", "adb_data_file", "file", "read");
+	ksu_allow(db, "init", "adb_data_file", "file", "getattr");
+	ksu_allow(db, "init", "adb_data_file", "file", "map");
+	ksu_allow(db, "init", "adb_data_file", "dir", "search");
+	ksu_allow(db, "init", "adb_data_file", "dir", "read");
+	ksu_allow(db, "init", "adb_data_file", "dir", "open");
+
+	// Allow zygote to execute Zygisk files from /data/adb
+	ksu_allow(db, "zygote", "adb_data_file", "file", "execute");
+	ksu_allow(db, "zygote", "adb_data_file", "file", "execute_no_trans");
+	ksu_allow(db, "zygote", "adb_data_file", "file", "open");
+	ksu_allow(db, "zygote", "adb_data_file", "file", "read");
+	ksu_allow(db, "zygote", "adb_data_file", "file", "getattr");
+	ksu_allow(db, "zygote", "adb_data_file", "file", "map");
+	ksu_allow(db, "zygote", "adb_data_file", "dir", "search");
+	ksu_allow(db, "zygote", "adb_data_file", "dir", "read");
+	ksu_allow(db, "zygote", "adb_data_file", "dir", "open");
+
+	// Allow zygote/system_server execmem for Zygisk injection
+	ksu_allow(db, "zygote", "zygote", "process", "execmem");
+	ksu_allow(db, "system_server", "system_server", "process", "execmem");
+
 	// copied from Magisk rules
 	// suRights
 	ksu_allow(db, "servicemanager", KERNEL_SU_DOMAIN, "dir", "search");
